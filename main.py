@@ -16,9 +16,8 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 
 from dataloader import LLP_dataset, ToTensor, categories
-from nets.net_audiovisual import MMIL_Net, LabelSmoothingNCELoss
+from nets.net_audiovisual import MMIL_Net,LabelSmoothingNCELoss
 from utils.eval_metrics import segment_level, event_level, print_overall_metric
-
 
 def get_LLP_dataloader(args):
     train_dataset = LLP_dataset(label=args.label_train, audio_dir=args.audio_dir,
@@ -241,6 +240,7 @@ def train_label_denoising(args, model, train_loader, optimizer, criterion, epoch
                 Pa[mask, i] = 0
 
         optimizer.zero_grad()
+
         output, a_prob, v_prob, frame_prob, sims_after, mask_after = model(audio, video, video_st, with_ca=True)
 
         output = torch.clamp(output, min=args.clamp, max=1 - args.clamp)
@@ -370,9 +370,9 @@ def eval(args, model, val_loader, set):
 def main():
     # Training settings
     parser = argparse.ArgumentParser(description='PyTorch Implementation of Audio-Visual Video Parsing')
-    parser.add_argument("--audio_dir", type=str, default='data/feats/vggish/', help="audio dir")
-    parser.add_argument("--video_dir", type=str, default='data/feats/res152/', help="video dir")
-    parser.add_argument("--st_dir", type=str, default='data/feats/r2plus1d_18/', help="video dir")
+    parser.add_argument("--audio_dir", type=str, default='/home/limingchi/Cross-Modal learning for Audio-Visual Video Parsing/Cross-Modal-learning-for-Audio-Visual-Video-Parsing/data/feats/vggish/', help="audio dir")
+    parser.add_argument("--video_dir", type=str, default='/home/limingchi/Cross-Modal learning for Audio-Visual Video Parsing/Cross-Modal-learning-for-Audio-Visual-Video-Parsing/data/feats/res152/', help="video dir")
+    parser.add_argument("--st_dir", type=str, default='/home/limingchi/Cross-Modal learning for Audio-Visual Video Parsing/Cross-Modal-learning-for-Audio-Visual-Video-Parsing/data/feats/r2plus1d_18/', help="video dir")
     parser.add_argument("--label_train", type=str, default="data/AVVP_train.csv", help="weak train csv file")
     parser.add_argument("--label_val", type=str, default="data/AVVP_val_pd.csv", help="weak val csv file")
     parser.add_argument("--label_test", type=str, default="data/AVVP_test_pd.csv", help="weak test csv file")
@@ -380,7 +380,7 @@ def main():
     parser.add_argument('--epochs', type=int, default=25, help='number of epochs to train')
     parser.add_argument('--warm_up_epoch', type=float, default=0.9, help='warm-up epochs')
     parser.add_argument('--optimizer', type=str, choices=['sgd', 'adam'], default='adam')
-    parser.add_argument('--lr', type=float, default=5e-4, help='learning rate')
+    parser.add_argument('--lr', type=float, default=5.5e-4, help='learning rate')
     parser.add_argument('--weight_decay', type=float, default=0)
     parser.add_argument('--lr_step_size', type=int, default=6)
     parser.add_argument('--lr_gamma', type=float, default=0.25)
@@ -390,15 +390,15 @@ def main():
                                  'train_label_denoising', 'test_noise_estimator', 'test_JoMoLD'],
                         help="with mode to use")
     parser.add_argument('--num_layers', type=int, default=1)
-    parser.add_argument('--v_thres', type=float, default=1.8)
+    parser.add_argument('--v_thres', type=float, default=1.9)
     parser.add_argument('--a_thres', type=float, default=0.6)
-    parser.add_argument('--noise_ratio_file', type=str)
+    parser.add_argument('--noise_ratio_file', default="noise_ratios.npz",type=str)
     parser.add_argument('--a_smooth', type=float, default=1.0)
     parser.add_argument('--v_smooth', type=float, default=0.9)
-    parser.add_argument('--audio_weight', type=float, default=2.0)
+    parser.add_argument('--audio_weight', type=float, default=2)
     parser.add_argument('--visual_weight', type=float, default=1.0)
     parser.add_argument('--video_weight', type=float, default=1.0)
-    parser.add_argument('--nce_weight', type=float, default=1.0)
+    parser.add_argument('--nce_weight', type=float, default=1.25)
     parser.add_argument('--clamp', type=float, default=1e-7)
     parser.add_argument('--nce_smooth', type=float, default=0.1)
     parser.add_argument('--temperature', type=float, default=0.2, help='feature temperature number')
@@ -406,7 +406,7 @@ def main():
     parser.add_argument('--log_file', type=str, help="log file path")
     parser.add_argument('--save_model', type=str, choices=["true", "false"], help='whether to save model')
     parser.add_argument("--model_save_dir", type=str, default='ckpt/', help="model save dir")
-    parser.add_argument("--checkpoint", type=str, default='MMIL_Net', help="save model name")
+    parser.add_argument("--checkpoint", type=str, default='JoMoLD.pt', help="save model name")
     args = parser.parse_args()
 
     # print parameters
@@ -447,9 +447,10 @@ def main():
             audio_seg, visual_seg, av_seg, avg_type_seg, avg_event_seg, \
             audio_eve, visual_eve, av_eve, avg_type_eve, avg_event_eve \
                 = eval(args, model, val_loader, args.label_val)
-            if audio_eve >= best_F:
-                best_F = audio_eve
+            if avg_type_seg >= best_F:
+                best_F = avg_type_seg
                 best_model = copy.deepcopy(model)
+                best_epoch=epoch
                 if save_model:
                     state_dict = get_random_state()
                     state_dict['model'] = model.state_dict()
@@ -457,6 +458,7 @@ def main():
                     state_dict['scheduler'] = scheduler.state_dict()
                     state_dict['epochs'] = args.epochs
                     torch.save(state_dict, osp.join(args.model_save_dir, args.checkpoint))
+                    print("成功保存")
             if logger:
                 logger.add_scalar("audio_seg", audio_seg, global_step=epoch * len(train_loader))
                 logger.add_scalar("visual_seg", visual_seg, global_step=epoch * len(train_loader))
@@ -472,7 +474,8 @@ def main():
             logger.close()
         optimizer.zero_grad()
         model = best_model
-        print("Test the best model:")
+        #print("Test the best epoch {best_epoch} model:")
+        print(f"Test the best epoch {best_epoch} model:")
         eval(args, model, test_loader, args.label_test)
     elif args.mode == 'calculate_noise_ratio':
         train_dataset = LLP_dataset(label=args.label_train, audio_dir=args.audio_dir,
@@ -507,8 +510,8 @@ def main():
             audio_seg, visual_seg, av_seg, avg_type_seg, avg_event_seg, \
             audio_eve, visual_eve, av_eve, avg_type_eve, avg_event_eve \
                 = eval(args, model, val_loader, args.label_val)
-            if audio_eve >= best_F:
-                best_F = audio_eve
+            if avg_type_seg >= best_F:
+                best_F = avg_type_seg
                 best_model = copy.deepcopy(model)
                 best_epoch = epoch
             if logger:
@@ -533,6 +536,7 @@ def main():
             state_dict['scheduler'] = scheduler.state_dict()
             state_dict['epochs'] = args.epochs
             torch.save(state_dict, osp.join(args.model_save_dir, args.checkpoint))
+            print("成功保存")
         print(f"Test the best epoch {best_epoch} model:")
         eval(args, model, test_loader, args.label_test)
     elif args.mode == 'test_noise_estimator' or args.mode == 'test_JoMoLD':

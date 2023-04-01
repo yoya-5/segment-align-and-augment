@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -122,7 +123,17 @@ class MMIL_Net(nn.Module):
         self.fc_fusion = nn.Linear(1024, 512)
         self.hat_encoder = Encoder('HANLayer', num_layers, norm=None, d_model=512,
                                    nhead=1, dim_feedforward=512, dropout=att_dropout)
+        self.alpha = 0.2
 
+        self.audio_gated = nn.Sequential(
+            nn.Linear(512, 1),
+
+            nn.Sigmoid()
+        )
+        self.video_gated = nn.Sequential(
+            nn.Linear(512, 1),
+            nn.Sigmoid()
+        )
         self.temp = temperature
         if cls_dropout != 0:
             self.dropout = nn.Dropout(p=cls_dropout)
@@ -138,13 +149,83 @@ class MMIL_Net(nn.Module):
         vid_st = self.fc_st(visual_st)
         x2 = torch.cat((vid_s, vid_st), dim=-1)
         x2 = self.fc_fusion(x2)
-        # HAN
-        x1, x2 = self.hat_encoder(x1, x2, with_ca=with_ca)
 
-        # noise contrastive
-        # please refer to https://github.com/Yu-Wu/Modaily-Aware-Audio-Visual-Video-Parsing
-        xx2_after = F.normalize(x2, p=2, dim=-1)
-        xx1_after = F.normalize(x1, p=2, dim=-1)
+        # HAN
+        x1, x2 = self.hat_encoder(x1, x2, with_ca=False)
+
+
+        #先对齐特征，确保每个时刻两个模态特征都是相关性最高的
+        #x1, x2 = self.hat_encoder(audio_query_output, video_query_output)
+        xx2_after = x2
+        xx1_after = x1
+        # # ################step1###############
+        # w=torch.rand(b,10,10).cuda()
+        # for i in range(10):
+        #     for j in range(10):
+        #         w[:, i, j] = torch.sum(xx1_after[:, j, :].clone()*xx2_after[:, i, :].clone(),dim=1)
+        #
+        #
+        # w=torch.softmax(w,dim=2)
+        # _, max_indices = torch.max(w.clone(), dim=2, keepdim=True)
+        #
+        # w=w.clone().zero_()
+        # w=w.clone().scatter_(2, max_indices, 1)
+        #
+        #
+        # temp = xx1_after.clone()  # 复制 xx1_after，准备做后续计算
+        # for i in range(10):
+        #         xx1_after[:, i, :] = (w[:, i, 0].unsqueeze(1) * temp[:, 0, :].clone() +
+        #                               w[:, i, 1].unsqueeze(1) * temp[:, 1, :].clone() +
+        #                               w[:, i, 2].unsqueeze(1) * temp[:, 2, :].clone() +
+        #                               w[:, i, 3].unsqueeze(1) * temp[:, 3, :].clone() +
+        #                               w[:, i, 4].unsqueeze(1) * temp[:,  4, :].clone() +
+        #                               w[:, i, 5].unsqueeze(1) * temp[:,  5, :].clone() +
+        #                               w[:, i, 6].unsqueeze(1) * temp[:, 6, :].clone() +
+        #                               w[:, i, 7].unsqueeze(1) * temp[:,  7, :].clone() +
+        #                               w[:, i, 8].unsqueeze(1) * temp[:,  8, :].clone() +
+        #                               w[:, i, 9].unsqueeze(1) * temp[:,  9, :].clone())
+        # video_key_value_feature = xx2_after
+        # audio_key_value_feature = xx1_after
+        # video_query_output = xx2_after
+        # audio_query_output = xx1_after
+        # audio_gate = self.audio_gated(video_key_value_feature)
+        # video_gate = self.video_gated(audio_key_value_feature)
+        #
+        # video_query_output = (1 - self.alpha) * video_query_output + audio_gate * video_query_output * self.alpha
+        # audio_query_output = (1 - self.alpha) * audio_query_output + video_gate * audio_query_output * self.alpha
+        #
+        # xx1_after=audio_query_output
+        # xx2_after=video_query_output
+        #
+        # xx2_after = F.normalize(xx2_after, p=2, dim=-1)
+        # xx1_after = F.normalize(xx1_after, p=2, dim=-1)
+        ################step1###############
+
+        ######step3###############
+        ##把对齐后的特征进行加强
+        video_key_value_feature = xx2_after
+        audio_key_value_feature = xx1_after
+        video_query_output = xx2_after
+        audio_query_output = xx1_after
+        audio_gate = self.audio_gated(video_key_value_feature)
+        video_gate = self.video_gated(audio_key_value_feature)
+
+        video_query_output = (1 - self.alpha) * video_query_output + audio_gate * video_query_output * self.alpha
+        audio_query_output = (1 - self.alpha) * audio_query_output + video_gate * audio_query_output * self.alpha
+        # video_query_output = (video_query_output + audio_gate * video_query_output * self.alpha)/1.05
+        # audio_query_output = (audio_query_output + video_gate * audio_query_output * self.alpha)/1.05
+        x1,x2=self.hat_encoder(audio_query_output, video_query_output, with_ca=True)
+        # x1 = audio_query_output
+        # x2 = video_query_output
+        xx2_after = x2
+        xx1_after = x1
+
+        xx2_after = F.normalize(xx2_after, p=2, dim=-1)
+        xx1_after = F.normalize(xx1_after, p=2, dim=-1)
+        ######step3###############
+
+
+
         sims_after = xx1_after.bmm(xx2_after.permute(0, 2, 1)).squeeze(1) / self.temp
         sims_after = sims_after.reshape(-1, 10)
         mask_after = torch.zeros(b, 10)
